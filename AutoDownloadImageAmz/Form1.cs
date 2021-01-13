@@ -19,8 +19,7 @@ namespace AutoDownloadImageAmz
     {
         volatile bool bRunning = false;
         volatile int __checked = 0;
-
-        volatile int __downloaded = 0;
+        volatile int __currentLnk = 1;
 
         public Form1()
         {
@@ -28,6 +27,7 @@ namespace AutoDownloadImageAmz
 
             textBoxLink.Text = "link.txt";
             textBoxDownloadFoler.Text = "Download_Img";
+            
         }
 
         private void buttonStart_Click(object sender, EventArgs e)
@@ -55,17 +55,23 @@ namespace AutoDownloadImageAmz
             {
                 SetbtnStart(true);
                 __checked = 0;
-                __downloaded = 0;
                 bRunning = true;
 
                 Parallel.ForEach(links, new ParallelOptions() { MaxDegreeOfParallelism = (int)numericUpDownThread.Value }, (item, loopState) =>
                 {
+
+                    int __downloaded = 0;
                     if (!bRunning || __downloaded >= maxImage)
                         loopState.Break();
 
-                    DownloadImgae(1, item, maxImage);
-                    Thread.Sleep(200);
+                    var chromeDriver = StartProGram();
+                    WebClient client = new WebClient();
 
+                    string sFolder = this.textBoxDownloadFoler.Text + "\\Link_" + (__currentLnk++).ToString();
+                    Directory.CreateDirectory(sFolder);
+
+                    DownloadImgae(1, chromeDriver, client, item, maxImage, __downloaded, sFolder);
+                    Thread.Sleep(200);
 
                     __checked = __checked + 1;
                     SetLabelStatus("Status: Running -> " + links.Count + " | " + "Checked =>>" + __checked + " / " + links.Count);
@@ -74,12 +80,30 @@ namespace AutoDownloadImageAmz
                 SetLabelStatus("Status: Imported -> " + links.Count + " | " + "Checked =>>" + links.Count + " / " + links.Count);
                 SetbtnStart(true);
                 MessageBox.Show("Completed !", "Done");
-            });
-
-            t.IsBackground = true;
+            })
+            {
+                IsBackground = true
+            };
             t.Start();
 
 
+        }
+
+        ChromeDriver StartProGram()
+        {
+            var chromeDriverService = ChromeDriverService.CreateDefaultService();
+            chromeDriverService.HideCommandPromptWindow = true;
+
+            ChromeOptions options = new ChromeOptions();
+            options.AddArgument("--start-maximized");
+            options.AddArguments("--disable-notifications");
+            options.AddArguments("disable-infobars");
+            options.AddExcludedArgument("enable-automation");
+
+            ChromeDriver chromeDriver = new ChromeDriver(chromeDriverService, options);
+            chromeDriver.Manage().Timeouts().ImplicitWait = TimeSpan.FromSeconds(5);
+
+            return chromeDriver;
         }
 
         IWebElement FindElementByXpath(ChromeDriver driver, String sXpath, int timmeout = 5)
@@ -99,26 +123,22 @@ namespace AutoDownloadImageAmz
             return element;
         }
 
-        private void DownloadImgae(int index, string link, int maxImage)
+        private void DownloadImgae(int index, ChromeDriver chromeDriver, WebClient client, string link, int maxImage, int __downloaded, string folder)
         {
+            int i = 0;
+            IWebElement iWebEle;
             try
             {
-                var chromeDriverService = ChromeDriverService.CreateDefaultService();
-                //chromeDriverService.HideCommandPromptWindow = true;
-
-                ChromeOptions options = new ChromeOptions();
-                options.AddArgument("--start-maximized"); 
-
                 try
                 {
-                    ChromeDriver chromeDriver = new ChromeDriver(chromeDriverService, options);
                     chromeDriver.Navigate().GoToUrl(link);
 
                     if (!bRunning || __downloaded >= maxImage)
+                    {
+                        chromeDriver.Quit();
                         return;
+                    }
 
-                    // get all item in a page
-                    // Get all link
                     List<string> lsLinkItem = new List<string>();
                     IList<IWebElement> lsItem = chromeDriver.FindElements(By.XPath("//div//h2//a"));
                     foreach (IWebElement item in lsItem)
@@ -130,51 +150,52 @@ namespace AutoDownloadImageAmz
                         }
                     }
 
-                    // Download all image in a item
                     foreach (string sLinkItem in lsLinkItem)
                     {
                         chromeDriver.Navigate().GoToUrl(sLinkItem);
-                        // click to download hight 
-                        IWebElement iWebImage = chromeDriver.FindElement(By.XPath("//li[contains(@class,'image item itemNo0 maintain-height')]//span//span//div//img"));
+                        iWebEle = chromeDriver.FindElement(By.XPath("//li[contains(@class,'image item itemNo0 maintain-height')]//span//span//div//img"));
+                        string path = iWebEle.GetAttribute("src");
 
-                        // get image path
-                        string path = iWebImage.GetAttribute("src");
-
-                        // download and save file
                         if (path != null && path.Length != 0)
                         {
-                            // detetect file name
                             string sFileName;
-                            //IWebElement iWebTitle = chromeDriver.FindElement(By.Id("productTitle")).Text;
                             string filename = chromeDriver.FindElement(By.Id("productTitle")).Text;
-                            sFileName =  this.textBoxDownloadFoler.Text + "\\" + filename + Path.GetExtension(path);
+                            sFileName = folder + "\\" + filename + Path.GetExtension(path);
                             
-                            DownloadImgaeByLink(chromeDriver, path, sFileName);
+                            DownloadImgaeByLink(chromeDriver, client, path, sFileName);
+                            __downloaded++;
+
+                            if (!bRunning || __downloaded >= maxImage)
+                            {
+                                chromeDriver.Quit();
+                                return;
+                            }
                         }
                     }    
-
-                    // Next Page======================
-                    try
-                    {
-                        DownloadImgae(index++, link, maxImage);
-                    }
-                    catch { }
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show("Error Open Chrome Browser\nError: " + ex.Message, "Error");
+                    Console.WriteLine("Error Open Chrome Browser\nError: " + ex.Message, "Error");
                 }
+
+                try
+                {
+                    chromeDriver.Navigate().GoToUrl(link);
+                    iWebEle = chromeDriver.FindElement(By.XPath("//li//a[contains(text(),'Next')]"));
+                    string sNextPage = iWebEle.GetAttribute("href");
+                    DownloadImgae(index++, chromeDriver, client, sNextPage, maxImage, __downloaded, folder);
+                }
+                catch { }
             }
-            catch { }
+            catch {
+            }
+
+            chromeDriver.Quit();
         }
 
-        private void DownloadImgaeByLink(ChromeDriver chrome, string link, string sFilePath)
+        private void DownloadImgaeByLink(ChromeDriver chrome, WebClient client, string link, string sFilePath)
         {
-            
-            using (WebClient client = new WebClient())
-            {
-                client.DownloadFile(new Uri(link), sFilePath);
-            }
+             client.DownloadFileAsync(new Uri(link), sFilePath);
         }
 
         private void DownloadImgaeFor1To400(ChromeDriver chromeDriver, string link, int index)
